@@ -159,12 +159,30 @@ function setSync(st) {
   if (d) d.className = 'sync-dot ' + (st==='ok'?'ok':st==='busy'?'busy':st==='err'?'err':'');
 }
 
+// Apps Script no envía cabeceras CORS, así que leemos con JSONP
+// (una etiqueta <script>, que no está sujeta a esa restricción).
+function jsonp(url, token) {
+  return new Promise(function(resolve, reject) {
+    var cb = 'mfcb' + Date.now() + Math.floor(Math.random()*10000);
+    var s = document.createElement('script');
+    var done = false;
+    var t = setTimeout(function(){ if(!done){ cleanup(); reject(new Error('Tiempo agotado')); } }, 20000);
+    function cleanup(){
+      done = true; clearTimeout(t);
+      try { delete window[cb]; } catch(e){ window[cb] = undefined; }
+      if (s.parentNode) s.parentNode.removeChild(s);
+    }
+    window[cb] = function(d){ cleanup(); resolve(d); };
+    s.onerror = function(){ cleanup(); reject(new Error('No se pudo alcanzar la URL')); };
+    s.src = url + '?callback=' + cb + '&token=' + encodeURIComponent(token);
+    document.body.appendChild(s);
+  });
+}
+
 function syncPull(silent) {
   if (!CFG.url || !CFG.token) return Promise.resolve();
   setSync('busy');
-  var u = CFG.url + '?token=' + encodeURIComponent(CFG.token);
-  return fetch(u)
-    .then(function(r){ return r.json(); })
+  return jsonp(CFG.url, CFG.token)
     .then(function(d){
       if (d.error) throw new Error(d.error);
       S.expenses = d.gastos || [];
@@ -190,36 +208,32 @@ function syncPush() {
   clearTimeout(pushTimer);
   setSync('busy');
   pushTimer = setTimeout(function(){
+    // mode no-cors: la petición llega al script aunque no podamos leer la respuesta
     fetch(CFG.url, {
-      method:'POST',
+      method:'POST', mode:'no-cors',
       headers:{'Content-Type':'text/plain;charset=utf-8'},
       body: JSON.stringify({
         token: CFG.token, action:'guardarTodo',
         gastos: S.expenses, categorias: S.categories, periodos: S.periods
       })
     })
-    .then(function(r){ return r.json(); })
-    .then(function(d){ setSync(d.error ? 'err' : 'ok'); })
-    .catch(function(){ setSync('err'); });
+    .then(function(){ setSync('ok'); })
+    .catch(function(){ setSync('err'); lastError='No se pudo guardar'; });
   }, 900);
 }
 
 function saveAll() { saveCache(); syncPush(); }
 
-function confirmarOps(ops) {
+function postAccion(action, ops) {
   if (!CFG.url || !ops.length) return Promise.resolve();
   return fetch(CFG.url, {
-    method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'},
-    body: JSON.stringify({ token:CFG.token, action:'confirmarOps', ops:ops })
-  }).then(function(r){ return r.json(); });
+    method:'POST', mode:'no-cors',
+    headers:{'Content-Type':'text/plain;charset=utf-8'},
+    body: JSON.stringify({ token:CFG.token, action:action, ops:ops })
+  }).catch(function(){ setSync('err'); });
 }
-function descartarOps(ops) {
-  if (!CFG.url || !ops.length) return Promise.resolve();
-  return fetch(CFG.url, {
-    method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'},
-    body: JSON.stringify({ token:CFG.token, action:'descartarOps', ops:ops })
-  }).then(function(r){ return r.json(); });
-}
+function confirmarOps(ops) { return postAccion('confirmarOps', ops); }
+function descartarOps(ops) { return postAccion('descartarOps', ops); }
 
 // ═══════════════════════════════════════════════════════════════
 // HELPERS
@@ -303,18 +317,9 @@ function guardarCfg(){
   var box = document.getElementById('setup-msg');
   box.style.display='block';
   box.innerHTML='<div style="color:#F7DC6F">⏳ Probando conexión...</div>';
-  fetch(u + '?token=' + encodeURIComponent(t))
-    .then(function(r){ return r.text(); })
-    .then(function(txt){
-      var d;
-      try { d = JSON.parse(txt); }
-      catch(e){
-        box.innerHTML='<div style="color:#FF6B6B">❌ La URL no devolvió JSON.</div>'+
-          '<div style="font-size:11px;color:#888;margin-top:6px">Revisa que el acceso sea "Cualquier usuario" y que la URL termine en /exec.</div>'+
-          '<div style="font-size:10px;color:#555;margin-top:6px;word-break:break-all">'+esc(txt.substring(0,150))+'</div>';
-        return;
-      }
-      if(d.error){
+  jsonp(u, t)
+    .then(function(d){
+      if(d && d.error){
         box.innerHTML='<div style="color:#FF6B6B">❌ '+esc(d.error)+'</div>'+
           '<div style="font-size:11px;color:#888;margin-top:6px">El token de la app no coincide con el del script. Copia el valor exacto que está entre comillas en la línea TOKEN, sin espacios.</div>'+
           '<div style="font-size:10px;color:#555;margin-top:6px">Token enviado: "'+esc(t)+'" ('+t.length+' caracteres)</div>';
