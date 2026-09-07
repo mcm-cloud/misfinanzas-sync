@@ -135,6 +135,7 @@ var editExpId = null;
 var calView = null;
 var searchQuery = '';
 var syncState = 'idle';
+var lastError = '';
 var pushTimer = null;
 
 function loadCfg() {
@@ -178,7 +179,8 @@ function syncPull(silent) {
     })
     .catch(function(e){
       setSync('err');
-      if (!silent) showToast('Error de conexión');
+      lastError = String(e.message || e);
+      if (!silent) showToast(lastError.indexOf('Token')!==-1 ? 'Token incorrecto' : 'Error de conexión');
       console.error(e);
     });
 }
@@ -287,6 +289,7 @@ function renderSetup(){
       '<div class="label">Token secreto</div>'+
       '<input type="text" id="cfg-token" placeholder="el que pusiste en el script" class="mb12">'+
       '<button class="btn primary" onclick="guardarCfg()">Conectar</button>'+
+      '<div id="setup-msg" style="display:none;margin-top:12px;padding:10px;background:#0f0f1a;border-radius:9px;font-size:12px;line-height:1.5"></div>'+
     '</div>'+
     '<div style="font-size:11px;color:#555;line-height:1.6">Estos datos se guardan solo en este dispositivo. Tendrás que ingresarlos una vez por cada dispositivo que uses.</div>'+
   '</div>';
@@ -297,9 +300,35 @@ function guardarCfg(){
   var t = document.getElementById('cfg-token').value.trim();
   if(!u || !t) return showToast('Completa ambos campos');
   if(u.indexOf('/exec')===-1) return showToast('La URL debe terminar en /exec');
-  CFG.url=u; CFG.token=t; saveCfg();
-  showToast('Conectando...');
-  syncPull().then(function(){ render(); });
+  var box = document.getElementById('setup-msg');
+  box.style.display='block';
+  box.innerHTML='<div style="color:#F7DC6F">⏳ Probando conexión...</div>';
+  fetch(u + '?token=' + encodeURIComponent(t))
+    .then(function(r){ return r.text(); })
+    .then(function(txt){
+      var d;
+      try { d = JSON.parse(txt); }
+      catch(e){
+        box.innerHTML='<div style="color:#FF6B6B">❌ La URL no devolvió JSON.</div>'+
+          '<div style="font-size:11px;color:#888;margin-top:6px">Revisa que el acceso sea "Cualquier usuario" y que la URL termine en /exec.</div>'+
+          '<div style="font-size:10px;color:#555;margin-top:6px;word-break:break-all">'+esc(txt.substring(0,150))+'</div>';
+        return;
+      }
+      if(d.error){
+        box.innerHTML='<div style="color:#FF6B6B">❌ '+esc(d.error)+'</div>'+
+          '<div style="font-size:11px;color:#888;margin-top:6px">El token de la app no coincide con el del script. Copia el valor exacto que está entre comillas en la línea TOKEN, sin espacios.</div>'+
+          '<div style="font-size:10px;color:#555;margin-top:6px">Token enviado: "'+esc(t)+'" ('+t.length+' caracteres)</div>';
+        return;
+      }
+      box.innerHTML='<div style="color:#82E0AA">✓ Conectado correctamente</div>';
+      CFG.url=u; CFG.token=t; saveCfg();
+      setTimeout(function(){ syncPull(true).then(function(){ render(); }); }, 500);
+    })
+    .catch(function(e){
+      box.innerHTML='<div style="color:#FF6B6B">❌ No se pudo alcanzar la URL</div>'+
+        '<div style="font-size:11px;color:#888;margin-top:6px">'+esc(String(e.message||e))+'</div>'+
+        '<div style="font-size:11px;color:#888;margin-top:6px">Suele pasar si el acceso del script no es "Cualquier usuario", o si falta republicar tras el último cambio.</div>';
+    });
 }
 
 function renderShell(){
@@ -999,6 +1028,7 @@ function openSettings(){
     '<button class="btn secondary" onclick="saveSettings()" style="margin-bottom:14px">Guardar</button>'+
     '<div class="section-sep">Conexión</div>'+
     '<div style="font-size:11px;color:#666;margin-bottom:8px;word-break:break-all">'+esc(CFG.url)+'</div>'+
+    '<div style="font-size:11px;color:#666;margin-bottom:8px">'+(lastError?'Último error: '+esc(lastError):'')+'</div>'+
     '<button class="btn secondary" onclick="desconectar()" style="margin-bottom:14px">Cambiar conexión</button>'+
     '<div class="section-sep">Migrar desde la app anterior</div>'+
     '<div style="font-size:12px;color:#888;margin-bottom:8px">Exporta el JSON en tu app vieja (⚙️ → Exportar) y pega el contenido aquí.</div>'+
